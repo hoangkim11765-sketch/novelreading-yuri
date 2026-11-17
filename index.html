@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#16151D">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>Novelreading Yuri</title>
+<link rel="icon" href="icon-192.png">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  * { box-sizing: border-box; }
+  /* chạm/bấm không bôi đen chữ, không nháy màu xanh */
+  body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  input { -webkit-user-select: text; user-select: text; }
+  body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: #16151D; color: #fff; font-family: system-ui, sans-serif; }
+  header { display: flex; gap: 8px; align-items: center; padding: 8px; background: #222; border-bottom: 2px solid #F5B27A; }
+  header h1 { flex: 1; margin: 0; font-size: 18px; color: #F5B27A; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button, label.btn { background: #2a2622; color: #fff; border: 1.5px solid #F5B27A; border-radius: 10px; padding: 8px 14px; font-size: 16px; cursor: pointer; transition: background .15s; }
+  button:active, label.btn:active { background: #F5B27A; color: #16151D; }
+  main { flex: 1; overflow: auto; padding: 12px; }
+  .item { display: flex; align-items: center; gap: 8px; background: linear-gradient(135deg, #26221f, #1f1e26); border: 1.5px solid #F5B27A; border-radius: 12px; padding: 14px; margin-bottom: 10px; cursor: pointer; box-shadow: 0 0 10px rgba(245,178,122,.15); }
+  .item:active { background: #2f2925; }
+  .item .name { font-weight: 600; }
+  .item .name { flex: 1; }
+  .item small { color: #F5B27A; opacity: .8; font-weight: 400; display: block; margin-top: 4px; }
+  .del { background: transparent; color: #888; padding: 4px 8px; border: 0; }
+  .del.armed { background: #a33; color: #fff; }
+  form { display: flex; gap: 8px; margin-bottom: 12px; }
+  input[type=text] { flex: 1; padding: 8px; font-size: 16px; border-radius: 10px; border: 1.5px solid #F5B27A; background: #2c2c2c; color: #fff; }
+  #msg { color: #f99; padding: 0 12px; margin: 8px 0; }
+  #msg:empty { display: none; }
+  /* các trang PDF nối thành 1 dải dài, rộng sát mép màn hình */
+  #reader { flex: 1; overflow-y: auto; position: relative; }
+  .pg { width: 100%; background: #222; }
+  .pg canvas { display: block; width: 100%; height: 100%; }
+  .chap-nav { display: flex; gap: 12px; padding: 20px 16px 32px; }
+  .chap-nav button { flex: 1; padding: 14px; }
+  .chap-nav button:disabled { opacity: .35; }
+  .empty { color: #888; text-align: center; margin-top: 40px; }
+  [hidden] { display: none !important; }
+  #logo-sm { border-radius: 50%; border: 1.5px solid #F5B27A; }
+  .logo-big { display: block; width: 170px; height: 170px; margin: 4px auto 18px; border-radius: 50%; border: 2px solid #F5B27A; box-shadow: 0 0 18px rgba(245,178,122,.25); }
+</style>
+</head>
+<body>
+<header>
+  <button id="back" aria-label="Quay lại" hidden>←</button>
+  <img id="logo-sm" src="icon-192.png" alt="" width="36" height="36">
+  <h1 id="title">Novelreading Yuri</h1>
+  <button id="prev" aria-label="Trang trước" hidden>◀</button>
+  <span id="info"></span>
+  <button id="next" aria-label="Trang sau" hidden>▶</button>
+  <button id="fs" aria-label="Toàn màn hình">⛶</button>
+</header>
+<p id="msg"></p>
+<main id="list"><p class="empty">Đang tải…</p></main>
+<div id="reader" hidden></div>
+
+<!-- PDF.js 3.11.174 nhúng sẵn để mở được không cần mạng -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin="anonymous"></script>
+<!-- nạp sẵn phần xử lý PDF để chạy ngay trên trang, không cần worker riêng -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js" crossorigin="anonymous"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+const $ = id => document.getElementById(id);
+const say = t => $('msg').textContent = t || '';
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+// ===== Kho lưu trữ: trên mạng (khi mở bằng link app) hoặc trong máy (khi mở file) =====
+// Cả hai cùng 5 việc: load/save danh sách, put/get/del file PDF.
+function kv(mode, fn) {
+  return new Promise((ok, err) => {
+    const r = indexedDB.open('tu-truyen', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onerror = () => err(r.error);
+    r.onsuccess = () => {
+      const t = r.result.transaction('kv', mode), q = fn(t.objectStore('kv'));
+      t.oncomplete = () => ok(q.result);
+      t.onerror = () => err(t.error);
+    };
+  });
+}
+const localStore = {
+  load: () => kv('readonly', s => s.get('lib')),
+  save: lib => kv('readwrite', s => s.put(lib, 'lib')),
+  put: async f => { const id = 'f' + newId(); await kv('readwrite', s => s.put(f, id)); return id; },
+  get: async id => (await kv('readonly', s => s.get(id))).arrayBuffer(),
+  del: id => kv('readwrite', s => s.delete(id)),
+};
+async function cloudStore() {
+  if (!window.claude) return null;
+  const [db, assets, user] = await Promise.all(['db', 'assets', 'user'].map(n => claude.use(n)));
+  const uid = user && await user.id();
+  if (!db || !assets || !uid) return null;
+  const ref = db.doc('data/users/' + uid + '/library');
+  return {
+    load: async () => { const s = await ref.get(); return s.exists ? structuredClone(s.data()) : null; },
+    save: lib => ref.set(lib),
+    put: async f => (await assets.upload(f)).id,
+    get: async id => (await fetch('/_blob/' + id)).arrayBuffer(),
+    del: id => assets.delete(id),
+  };
+}
+
+// lib = { series: [ { id, name, books: [ { id, name, ref, page, pages } ] } ] }
+let store, lib;
+let saving = Promise.resolve(), saveTimer;
+function save() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saving = saving.then(() => store.save(lib)).catch(e => say('Không lưu được: ' + (e.message || e.code)));
+  }, 300);
+}
+const findSeries = id => lib.series.find(s => s.id === id);
+
+// ===== Điều hướng: #  |  #s-<bộ>  |  #r-<bộ>-<file> (nút Back của điện thoại dùng được) =====
+function route() {
+  say('');
+  const h = location.hash.slice(1);
+  if (h.startsWith('r-')) { const [sid, bid] = h.slice(2).split('-'); return openBook(sid, bid); }
+  closeReader();
+  if (h.startsWith('s-') && findSeries(h.slice(2))) return showSeries(findSeries(h.slice(2)));
+  showHome();
+}
+$('back').onclick = () => history.back();
+
+// Nút ✕ bấm 2 lần mới xóa (tránh xóa nhầm)
+function delBtn(onDelete) {
+  const b = document.createElement('button');
+  b.className = 'del'; b.textContent = '✕'; b.setAttribute('aria-label', 'Xóa');
+  b.onclick = e => {
+    e.stopPropagation();
+    if (b.classList.contains('armed')) return onDelete();
+    b.classList.add('armed'); b.textContent = 'Xóa?';
+    setTimeout(() => { b.classList.remove('armed'); b.textContent = '✕'; }, 3000);
+  };
+  return b;
+}
+function item(name, sub, onOpen, onDelete) {
+  const d = document.createElement('div');
+  d.className = 'item';
+  d.innerHTML = '<div class="name"></div>';
+  d.firstChild.textContent = name;
+  if (sub) { const s = document.createElement('small'); s.textContent = sub; d.firstChild.append(s); }
+  d.onclick = onOpen;
+  d.append(delBtn(onDelete));
+  return d;
+}
+
+function showHome() {
+  $('title').textContent = 'Novelreading Yuri'; $('back').hidden = true;
+  const list = $('list'); list.innerHTML = '<img class="logo-big" src="icon-192.png" alt="Logo Novelreading Yuri">';
+  const f = document.createElement('form');
+  f.innerHTML = '<input type="text" placeholder="Tên bộ truyện mới" aria-label="Tên bộ truyện mới" required><button>+ Thêm bộ</button>';
+  f.onsubmit = e => {
+    e.preventDefault();
+    lib.series.push({ id: newId(), name: f[0].value.trim(), books: [] });
+    save(); showHome();
+  };
+  list.append(f);
+  if (!lib.series.length) list.insertAdjacentHTML('beforeend', '<p class="empty">Chưa có bộ nào. Gõ tên rồi bấm "Thêm bộ".</p>');
+  for (const s of lib.series) list.append(item(s.name, s.books.length + ' file', () => location.hash = 's-' + s.id, async () => {
+    lib.series = lib.series.filter(x => x !== s); save(); showHome();
+    for (const b of s.books) await store.del(b.ref).catch(() => {});
+  }));
+}
+
+function showSeries(s) {
+  $('title').textContent = s.name; $('back').hidden = false;
+  const list = $('list'); list.innerHTML = '';
+  const add = document.createElement('label');
+  add.className = 'btn'; add.style.display = 'block'; add.style.textAlign = 'center'; add.style.marginBottom = '12px';
+  add.innerHTML = '+ Thêm file PDF<input type="file" accept="application/pdf" multiple hidden>';
+  add.querySelector('input').onchange = async e => {
+    for (const f of e.target.files) {
+      say('Đang tải lên ' + f.name + '…');
+      try {
+        s.books.push({ id: newId(), name: f.name.replace(/\.pdf$/i, ''), ref: await store.put(f), page: 1, pages: 0 });
+        save();
+      } catch (err) { say('Không tải lên được ' + f.name + ': ' + (err.message || err.code)); return showSeries(s); }
+    }
+    say(''); showSeries(s);
+  };
+  list.append(add);
+  if (!s.books.length) list.insertAdjacentHTML('beforeend', '<p class="empty">Chưa có file nào.</p>');
+  // sắp theo tên, số đứng đúng thứ tự (Chuong_9 trước Chuong_10)
+  s.books.sort((a, b) => a.name.localeCompare(b.name, 'vi', { numeric: true }));
+  for (const b of s.books) {
+    const sub = b.pages ? `Đang đọc trang ${b.page}/${b.pages}` : 'Chưa đọc';
+    list.append(item(b.name, sub, () => location.hash = `r-${s.id}-${b.id}`, async () => {
+      s.books = s.books.filter(x => x !== b); save(); showSeries(s);
+      await store.del(b.ref).catch(() => {});
+    }));
+  }
+}
+
+// ===== Đọc PDF: mọi trang xếp thành 1 dải dài, vuốt để đọc =====
+const reader = $('reader');
+let pdf = null, book = null, pages = [];   // pages: { el, c, page, state: 0 trống | 1 đang vẽ | 2 đã vẽ }
+
+async function openBook(sid, bid) {
+  const s = findSeries(sid), b = s && s.books.find(x => x.id === bid);
+  if (!b) return location.hash = '';
+  $('title').textContent = b.name; $('back').hidden = false;
+  $('list').hidden = true; reader.hidden = false; reader.innerHTML = '';
+  for (const id of ['prev', 'next']) $(id).hidden = false;
+  $('info').textContent = 'Đang mở…';
+  try {
+    pdf = await pdfjsLib.getDocument({ data: await store.get(b.ref) }).promise;
+  } catch { say('Không mở được file này.'); $('info').textContent = ''; return; }
+  pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i), v = page.getViewport({ scale: 1 });
+    const el = document.createElement('div'), c = document.createElement('canvas');
+    el.className = 'pg'; el.style.aspectRatio = v.width + ' / ' + v.height;
+    el.append(c); reader.append(el);
+    pages.push({ el, c, page, state: 0 });
+  }
+  // cuối trang PDF cuối: nút sang file trước / file sau trong cùng bộ
+  const list = [...s.books].sort((x, y) => x.name.localeCompare(y.name, 'vi', { numeric: true }));
+  const i = list.indexOf(b), nav = document.createElement('nav');
+  nav.className = 'chap-nav';
+  for (const [o, label] of [[list[i - 1], '← Chương trước'], [list[i + 1], 'Chương sau →']]) {
+    const btn = document.createElement('button');
+    btn.textContent = label; btn.disabled = !o;
+    if (o) btn.onclick = () => location.hash = `r-${s.id}-${o.id}`;
+    nav.append(btn);
+  }
+  reader.append(nav);
+  book = b; b.pages = pdf.numPages;
+  reader.scrollTop = pages[Math.min(b.page || 1, pages.length) - 1].el.offsetTop;   // mở lại đúng trang đang đọc
+  update();
+}
+function closeReader() {
+  book = pdf = null; pages = []; reader.innerHTML = ''; reader.hidden = true; $('list').hidden = false;
+  for (const id of ['prev', 'next']) $(id).hidden = true;
+  $('info').textContent = '';
+}
+// Chỉ vẽ các trang gần chỗ đang xem, xóa trang ở xa để điện thoại không hết bộ nhớ
+function update() {
+  if (!book) return;
+  const top = reader.scrollTop, h = reader.clientHeight;
+  let cur = 1;
+  pages.forEach((p, i) => {
+    const y = p.el.offsetTop, ph = p.el.offsetHeight;
+    if (y <= top + h / 3) cur = i + 1;
+    if (p.state === 0 && y + ph > top - h && y < top + 2 * h) draw(p);
+    if (p.state === 2 && (y + ph < top - 3 * h || y > top + 4 * h)) { p.c.width = p.c.height = 0; p.state = 0; }
+  });
+  $('info').textContent = `${cur}/${pages.length}`;
+  if (book.page !== cur) { book.page = cur; save(); }   // ghi nhớ trang đang đọc
+}
+async function draw(p) {
+  p.state = 1;
+  const v = p.page.getViewport({ scale: 1 });
+  // vẽ theo độ nét màn hình để chữ không bị mờ trên điện thoại
+  const vp = p.page.getViewport({ scale: reader.clientWidth / v.width * devicePixelRatio });
+  p.c.width = vp.width; p.c.height = vp.height;
+  await p.page.render({ canvasContext: p.c.getContext('2d'), viewport: vp }).promise;
+  p.state = 2;
+  update();   // lướt nhanh lúc đang vẽ: kiểm tra lại để xóa trang đã ở xa
+}
+let ticking = false;
+reader.onscroll = () => { if (!ticking) { ticking = true; requestAnimationFrame(() => { ticking = false; update(); }); } };
+const go = d => { const p = book && pages[book.page - 1 + d]; if (p) reader.scrollTop = p.el.offsetTop; };
+$('prev').onclick = () => go(-1);
+$('next').onclick = () => go(1);
+addEventListener('keydown', e => { if (e.key === 'ArrowRight') go(1); if (e.key === 'ArrowLeft') go(-1); });
+addEventListener('resize', () => { for (const p of pages) if (p.state === 2) p.state = 0; update(); });
+addEventListener('hashchange', route);
+// Toàn màn hình (giống F11). iPhone không hỗ trợ nên báo lỗi nhẹ nhàng.
+$('fs').onclick = () => {
+  const p = document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.();
+  Promise.resolve(p).then(v => p === undefined && say('Máy này không hỗ trợ toàn màn hình.'), () => say('Máy này không hỗ trợ toàn màn hình.'));
+};
+
+// ===== Khởi động =====
+(async () => {
+  store = await cloudStore().catch(() => null) || localStore;
+  // xin trình duyệt đừng tự xóa truyện khi máy đầy bộ nhớ
+  if (store === localStore) navigator.storage?.persist?.().catch(() => {});
+  // bản cài trên điện thoại: mở được khi không có mạng
+  navigator.serviceWorker?.register('sw.js').catch(() => {});
+  try { lib = await store.load() || { series: [] }; }
+  catch (e) { lib = { series: [] }; say('Không đọc được dữ liệu đã lưu: ' + (e.message || e.code)); }
+  route();
+})();
+</script>
+</body>
+</html>
